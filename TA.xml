@@ -1,0 +1,534 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE nta PUBLIC '-//Uppaal Team//DTD Flat System 1.1//EN' 'http://www.it.uu.se/research/group/darts/uppaal/flat-1_2.dtd'>
+<nta>
+	<declaration>//structs
+typedef struct
+{
+    int row;
+    int col;
+} Point;
+
+typedef struct
+{
+    int row;
+    int col;
+    int dist;
+} QItem;
+//end of structs
+
+//count of drones
+const int drone_count = 3;
+//end of count of drones
+
+//maps
+
+const int N = 5;
+//this works with 3 drones (Verification)
+int real_world_map[N][N] = {
+{   00,	00,	00, 00, 00    },
+{   99,	99,	99, 00, 99    },
+{   00,	00,	00, 00, 00    },
+{   00,	99,	00, 99, 99    },
+{   00,	99,	00, 99, 99    }
+};
+
+/*
+//this works with 1 drone, does not work with drone_count &gt;= 2 (Verification)
+const int N = 10;
+int real_world_map[N][N] = {
+    {00, 00, 00, 00, 00, 00, 00, 00, 00, 00},
+    {00, 00, 00, 00, 00, 00, 00, 00, 00, 00},
+    {00, 00, 00, 00, 00, 00, 00, 00, 00, 00},
+    {00, 00, 00, 00, 00, 00, 00, 00, 00, 00},
+    {99, 99, 99, 99, 99, 00, 00, 99, 99, 99},
+    {00, 00, 00, 00, 00, 00, 00, 00, 00, 00},
+    {00, 00, 00, 00, 00, 00, 00, 00, 00, 00},
+    {00, 00, 00, 00, 00, 00, 00, 00, 00, 00},
+    {00, 00, 00, 00, 00, 00, 00, 00, 00, 00},
+    {00, 00, 00, 00, 00, 00, 00, 00, 00, 00}};
+*/
+/*
+//this works with 3 drones (Verification)
+const int N = 4;
+int real_world_map[N][N] = {
+{   00,	00,	00, 00    },
+{   99,	99,	99, 00    },
+{   00,	99,	00, 00    },
+{   99,	99,	99, 00    }
+};
+*/
+
+//end of maps
+
+//vars and consts
+clock time;
+const int batt_limit = 150;//60 * 15;
+const int discovering_time = 5;
+int working_dornes;
+int drones_came_back_count;
+int min_travel_time = 9999;
+int min_travel_time_drone_id;
+
+int map[N][N];
+Point path[N * N];
+chan discover_entrance, entrance_discovered, come_back;
+broadcast chan calculate, travel, die;
+int path_counter;
+int path_limit = 1;
+//end of vars and consts
+
+//functions
+void expand_path(int row, int col) //expands path when a new place is discovered
+{
+    int counter = path_limit;
+    int i = row;
+    int j = col;
+    if (i - 1 &gt;= 0 &amp;&amp; map[i - 1][j] == 0)
+    {
+        if (real_world_map[i - 1][j] == 0)
+        {
+            Point p;
+            p.row = i - 1;
+            p.col = j;
+            path[counter] = p;
+            counter++;
+            path_limit++;
+            map[i - 1][j] = -1;
+        }
+        else
+        {
+            map[i - 1][j] = 99;
+        }
+    }
+
+    if (i + 1 &lt; N &amp;&amp; map[i + 1][j] == 0)
+    {
+        if (real_world_map[i + 1][j] == 0)
+        {
+            Point p;
+            p.row = i + 1;
+            p.col = j;
+            path[counter] = p;
+            counter++;
+            path_limit++;
+            map[i + 1][j] = -1;
+        }
+        else
+        {
+            map[i + 1][j] = 99;
+        }
+    }
+
+    if (j - 1 &gt;= 0 &amp;&amp; map[i][j - 1] == 0)
+    {
+        if (real_world_map[i][j - 1] == 0)
+        {
+            Point p;
+            p.row = i;
+            p.col = j - 1;
+            path[counter] = p;
+            counter++;
+            path_limit++;
+            map[i][j - 1] = -1;
+        }
+        else
+        {
+            map[i][j - 1] = 99;
+        }
+    }
+
+    if (j + 1 &lt; N &amp;&amp; map[i][j + 1] == 0)
+    {
+        if (real_world_map[i][j + 1] == 0)
+        {
+            Point p;
+            p.row = i;
+            p.col = j + 1;
+            path[counter] = p;
+            counter++;
+            path_limit++;
+            map[i][j + 1] = -1;
+        }
+        else
+        {
+            map[i][j + 1] = 99;
+        }
+    }
+}
+
+//calculating min distance helpers
+QItem queue_array[1000];
+int r = -1;
+int f = -1;
+
+void push(QItem item)
+
+{
+    if (r != N * N - 1)
+    {
+        if (f == -1)
+            f = 0;
+        r = r + 1;
+        queue_array[r] = item;
+    }
+}
+void pop()
+{
+    if (f == -1 || f &gt; r)
+    {
+        return;
+    }
+    else
+    {
+        f = f + 1;
+    }
+}
+QItem front()
+{
+    return queue_array[f];
+}
+
+QItem source;
+Point dest;
+//end of calculating min distance helpers
+
+int min_distance() //calculates min distance between a drone a place to be discovered. Uses only discovered places as path.
+{
+    int i = 0;
+    int visited[N][N];
+    while (i &lt; N)
+    {
+        int j = 0;
+        while (j &lt; N)
+        {
+            if (map[i][j] == 0 || map[i][j] == 99 || map[i][j] == 2 || map[i][j] == 3) //cant visit 0 is unknown, 99 is wall, 2 to be discovered, 3 a drone is there
+            {
+                visited[i][j] = 1;
+            }
+            else //1 can visit is discovered
+            {
+                visited[i][j] = 0;
+            }
+            j++;
+        }
+        i++;
+    }
+    r = -1;
+    f = -1;
+
+    push(source);
+    visited[source.row][source.col] = 1;
+    while (!(f == -1 || f &gt; r))
+    {
+        QItem p = front();
+        pop();
+
+        if (p.row == dest.row &amp;&amp; p.col == dest.col)
+            return p.dist;
+
+        //destination found
+        if (p.row - 1 == dest.row &amp;&amp; p.col == dest.col)
+            return p.dist + 1;
+
+        if (p.row + 1 == dest.row &amp;&amp; p.col == dest.col)
+            return p.dist + 1;
+
+        if (p.row == dest.row &amp;&amp; p.col - 1 == dest.col)
+            return p.dist + 1;
+
+        if (p.row == dest.row &amp;&amp; p.col + 1 == dest.col)
+            return p.dist + 1;
+
+        //moving up
+        if (p.row - 1 &gt;= 0 &amp;&amp;
+            visited[p.row - 1][p.col] == 0)
+        {
+            QItem item;
+            item.row = p.row - 1;
+            item.col = p.col;
+            item.dist = p.dist + 1;
+            push(item);
+            visited[p.row - 1][p.col] = 1;
+        }
+
+        //moving down
+        if (p.row + 1 &lt; N &amp;&amp;
+            visited[p.row + 1][p.col] == 0)
+        {
+            QItem item;
+            item.row = p.row + 1;
+            item.col = p.col;
+            item.dist = p.dist + 1;
+            push(item);
+            visited[p.row + 1][p.col] = 1;
+        }
+
+        //moving left
+        if (p.col - 1 &gt;= 0 &amp;&amp;
+            visited[p.row][p.col - 1] == 0)
+        {
+            QItem item;
+            item.row = p.row;
+            item.col = p.col - 1;
+            item.dist = p.dist + 1;
+            push(item);
+            visited[p.row][p.col - 1] = 1;
+        }
+
+        // moving right
+        if (p.col + 1 &lt; N &amp;&amp;
+            visited[p.row][p.col + 1] == 0)
+        {
+            QItem item;
+            item.row = p.row;
+            item.col = p.col + 1;
+            item.dist = p.dist + 1;
+            push(item);
+            visited[p.row][p.col + 1] = 1;
+        }
+    }
+    return -1;
+}
+//end of functions</declaration>
+	<template>
+		<name x="5" y="5">Controller</name>
+		<location id="id0" x="-2932" y="-1700">
+			<name x="-3000" y="-1666">discovering_entrance</name>
+			<label kind="invariant" x="-3043" y="-1751">time &lt;= discovering_time</label>
+		</location>
+		<location id="id1" x="-2448" y="-1700">
+			<name x="-2490" y="-1683">path_is_set</name>
+		</location>
+		<location id="id2" x="-1998" y="-1700">
+			<name x="-2031" y="-1683">dest_is_set</name>
+			<committed/>
+		</location>
+		<location id="id3" x="-3179" y="-1700">
+			<committed/>
+		</location>
+		<location id="id4" x="-2694" y="-1700">
+			<name x="-2780" y="-1683">entrance_is_discovered</name>
+			<urgent/>
+		</location>
+		<location id="id5" x="-2448" y="-1471">
+			<name x="-2473" y="-1454">finished</name>
+		</location>
+		<location id="id6" x="-1998" y="-1947">
+			<urgent/>
+		</location>
+		<location id="id7" x="-2609" y="-2057">
+			<name x="-2652" y="-2040">time_is_up</name>
+		</location>
+		<init ref="id3"/>
+		<transition>
+			<source ref="id6"/>
+			<target ref="id7"/>
+			<label kind="guard" x="-2558" y="-2091">time + min_travel_time + discovering_time &gt; batt_limit</label>
+			<label kind="synchronisation" x="-2558" y="-2108">die!</label>
+			<nail x="-1997" y="-2057"/>
+		</transition>
+		<transition>
+			<source ref="id6"/>
+			<target ref="id1"/>
+			<label kind="guard" x="-2609" y="-1972">time + min_travel_time + discovering_time &lt;= batt_limit</label>
+			<label kind="synchronisation" x="-2490" y="-1997">travel!</label>
+			<nail x="-2448" y="-1947"/>
+		</transition>
+		<transition>
+			<source ref="id2"/>
+			<target ref="id6"/>
+			<label kind="synchronisation" x="-2066" y="-1819">calculate!</label>
+		</transition>
+		<transition>
+			<source ref="id5"/>
+			<target ref="id5"/>
+			<label kind="synchronisation" x="-2626" y="-1488">come_back!</label>
+			<nail x="-2541" y="-1420"/>
+			<nail x="-2541" y="-1522"/>
+		</transition>
+		<transition>
+			<source ref="id1"/>
+			<target ref="id5"/>
+			<label kind="guard" x="-2669" y="-1573">path_counter &gt;= path_limit and working_dornes == 0</label>
+		</transition>
+		<transition>
+			<source ref="id0"/>
+			<target ref="id4"/>
+			<label kind="guard" x="-2864" y="-1759">time &gt;= discovering_time</label>
+			<label kind="assignment" x="-2864" y="-1742">map[0][0] = 1,
+path_counter++</label>
+		</transition>
+		<transition>
+			<source ref="id4"/>
+			<target ref="id1"/>
+			<label kind="assignment" x="-2635" y="-1726">expand_path(0, 0)</label>
+		</transition>
+		<transition>
+			<source ref="id3"/>
+			<target ref="id0"/>
+			<label kind="guard" x="-3136" y="-1725">real_world_map[0][0] == 0</label>
+			<label kind="assignment" x="-3136" y="-1691">time = 0</label>
+		</transition>
+		<transition>
+			<source ref="id1"/>
+			<target ref="id2"/>
+			<label kind="guard" x="-2406" y="-1726">path_counter &lt; path_limit and working_dornes &lt; drone_count</label>
+			<label kind="assignment" x="-2346" y="-1692">dest.row = path[path_counter].row, 
+dest.col = path[path_counter].col,
+map[dest.row][dest.col] = 2,
+path_counter++,
+min_travel_time = 9999</label>
+		</transition>
+	</template>
+	<template>
+		<name>Drone</name>
+		<parameter>int id</parameter>
+		<declaration>Point current_pos;
+Point current_dest;
+Point last_dest;
+int dead;
+int travel_time; //dist * 2 seconds
+clock x;</declaration>
+		<location id="id8" x="-1964" y="-1156">
+			<name x="-1974" y="-1190">ready</name>
+		</location>
+		<location id="id9" x="-1607" y="-1156">
+			<committed/>
+		</location>
+		<location id="id10" x="-944" y="-1156">
+			<name x="-969" y="-1139">travelling</name>
+			<label kind="invariant" x="-995" y="-1122">x &lt;= travel_time</label>
+		</location>
+		<location id="id11" x="-944" y="-1394">
+			<name x="-978" y="-1428">discovering</name>
+			<label kind="invariant" x="-918" y="-1402">x &lt;= discovering_time</label>
+		</location>
+		<location id="id12" x="-2371" y="-1156">
+			<name x="-2498" y="-1164">travelling_back</name>
+			<label kind="invariant" x="-2414" y="-1130">x &lt;= travel_time</label>
+		</location>
+		<location id="id13" x="-1394" y="-1156">
+			<urgent/>
+		</location>
+		<location id="id14" x="-2371" y="-1343">
+			<name x="-2405" y="-1385">came_back</name>
+		</location>
+		<location id="id15" x="-2193" y="-1156">
+			<name x="-2235" y="-1139">will_come_back</name>
+			<committed/>
+		</location>
+		<location id="id16" x="-1394" y="-850">
+			<name x="-1377" y="-867">is_dead</name>
+		</location>
+		<init ref="id8"/>
+		<transition>
+			<source ref="id15"/>
+			<target ref="id16"/>
+			<label kind="guard" x="-2175" y="-841">time + travel_time &gt; batt_limit</label>
+			<nail x="-2193" y="-807"/>
+			<nail x="-1394" y="-807"/>
+		</transition>
+		<transition>
+			<source ref="id13"/>
+			<target ref="id16"/>
+			<label kind="synchronisation" x="-1385" y="-1020">die?</label>
+		</transition>
+		<transition>
+			<source ref="id15"/>
+			<target ref="id12"/>
+			<label kind="guard" x="-2346" y="-1198">time + travel_time &lt;= batt_limit</label>
+			<label kind="assignment" x="-2286" y="-1181">x = 0</label>
+		</transition>
+		<transition>
+			<source ref="id8"/>
+			<target ref="id15"/>
+			<label kind="synchronisation" x="-2193" y="-1224">come_back?</label>
+			<label kind="assignment" x="-2193" y="-1360">source.row = 0, 
+source.col = 0,
+current_dest.row = current_pos.row,
+current_dest.col = current_pos.col,
+travel_time = 2 * min_distance(),
+map[last_dest.row][last_dest.col] = 1</label>
+		</transition>
+		<transition>
+			<source ref="id10"/>
+			<target ref="id11"/>
+			<label kind="guard" x="-977" y="-1309">x &gt;= travel_time</label>
+			<label kind="assignment" x="-927" y="-1292">x = 0</label>
+		</transition>
+		<transition>
+			<source ref="id12"/>
+			<target ref="id14"/>
+			<label kind="guard" x="-2490" y="-1258">x &gt;= travel_time</label>
+			<label kind="assignment" x="-2499" y="-1317">current_pos.row = 0,
+current_pos.col = 0,
+drones_came_back_count++</label>
+		</transition>
+		<transition>
+			<source ref="id11"/>
+			<target ref="id8"/>
+			<label kind="guard" x="-1691" y="-1555">x &gt;= discovering_time</label>
+			<label kind="assignment" x="-1692" y="-1538">current_pos.row = current_dest.row,
+current_pos.col = current_dest.col,
+last_dest.row = current_dest.row,
+last_dest.col = current_dest.col,
+map[current_dest.row][current_dest.col] = 3,
+expand_path(current_dest.row, current_dest.col),
+working_dornes--</label>
+			<nail x="-1964" y="-1394"/>
+		</transition>
+		<transition>
+			<source ref="id8"/>
+			<target ref="id9"/>
+			<label kind="synchronisation" x="-1913" y="-1190">calculate?</label>
+			<label kind="assignment" x="-1913" y="-1156">source.row = current_pos.row, 
+source.col = current_pos.col,
+current_dest.row = dest.row,
+current_dest.col = dest.col,
+travel_time = 2 * min_distance()</label>
+		</transition>
+		<transition>
+			<source ref="id9"/>
+			<target ref="id13"/>
+			<label kind="guard" x="-1683" y="-1232">travel_time &gt;= 0 and travel_time &lt;= min_travel_time</label>
+			<label kind="assignment" x="-1598" y="-1207">min_travel_time = travel_time,
+min_travel_time_drone_id = id</label>
+		</transition>
+		<transition>
+			<source ref="id13"/>
+			<target ref="id10"/>
+			<label kind="guard" x="-1360" y="-1181">id == min_travel_time_drone_id</label>
+			<label kind="synchronisation" x="-1267" y="-1198">travel?</label>
+			<label kind="assignment" x="-1284" y="-1156">x = 0,
+map[last_dest.row][last_dest.col] = 1,
+working_dornes++</label>
+		</transition>
+		<transition>
+			<source ref="id13"/>
+			<target ref="id8"/>
+			<label kind="guard" x="-1870" y="-892">id != min_travel_time_drone_id</label>
+			<label kind="synchronisation" x="-1819" y="-875">travel?</label>
+			<nail x="-1598" y="-850"/>
+			<nail x="-1964" y="-850"/>
+		</transition>
+		<transition>
+			<source ref="id9"/>
+			<target ref="id8"/>
+			<label kind="guard" x="-1930" y="-986">travel_time &lt; 0 or travel_time &gt; min_travel_time</label>
+			<nail x="-1633" y="-952"/>
+			<nail x="-1947" y="-952"/>
+		</transition>
+	</template>
+	<system>Drone1 = Drone(1);
+Drone2 = Drone(2);
+Drone3 = Drone(3);
+
+system Controller, Drone1, Drone2, Drone3;
+</system>
+	<queries>
+		<query>
+			<formula>E&lt;&gt; Controller.finished and drones_came_back_count == drone_count/2</formula>
+			<comment></comment>
+		</query>
+	</queries>
+</nta>

@@ -1,0 +1,7 @@
+E<> Controller.finished and drones_came_back_count == drone_count
+
+E<> Controller.finished and drones_came_back_count == drone_count/2
+
+E<> Controller.finished and time < 15 * 60
+
+E<> Drone1.travel_time < 0 or Drone2.travel_time < 0 or Drone3.travel\_time < 0
